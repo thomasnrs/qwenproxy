@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { config } from '../core/config.js'
 import { getBasicHeaders } from '../services/playwright.js'
+import { getNextAccount } from '../core/account-manager.js'
 
 const app = new Hono()
 
 app.get('/v1/models', async (c) => {
   try {
-    const { cookie, userAgent, bxV } = await getBasicHeaders()
+    const account = getNextAccount()
+    const { cookie, userAgent, bxV } = await getBasicHeaders(account?.id)
     const response = await fetch(`${config.qwen.baseUrl}/api/models`, {
       headers: {
         'Accept': 'application/json, text/plain, */*',
@@ -71,7 +73,8 @@ app.get('/v1/models/:model', async (c) => {
   try {
     const modelId = c.req.param('model')
     const baseModelId = modelId.replace('-no-thinking', '')
-    const { cookie, userAgent, bxV } = await getBasicHeaders()
+    const account = getNextAccount()
+    const { cookie, userAgent, bxV } = await getBasicHeaders(account?.id)
     const response = await fetch(`${config.qwen.baseUrl}/api/models`, {
       headers: {
         'Accept': 'application/json, text/plain, */*',
