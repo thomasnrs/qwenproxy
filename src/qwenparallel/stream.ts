@@ -50,6 +50,61 @@ export function parseQwenError(raw: string): { message: string; status: number; 
   return null
 }
 
+/**
+ * Create a brand-new Qwen conversation and return its chat_id. Qwen requires a
+ * valid chat_id (both as the ?chat_id= query param and in the body) — it rejects
+ * null with a RequestValidationError. Giving each parallel request its own fresh
+ * chat is what lets one account run many streams without "chat is in progress".
+ */
+async function createNewChat(headers: Record<string, string>, model: string): Promise<string> {
+  const res = await fetch(`${QWEN_BASE}/api/v2/chats/new`, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      cookie: headers['cookie'],
+      origin: QWEN_BASE,
+      referer: `${QWEN_BASE}/`,
+      source: 'web',
+      'user-agent': headers['user-agent'],
+      'x-request-id': uuidv4(),
+      'bx-ua': headers['bx-ua'],
+      'bx-umidtoken': headers['bx-umidtoken'],
+      'bx-v': headers['bx-v'],
+    },
+    body: JSON.stringify({
+      title: 'New Chat',
+      models: [model],
+      chat_mode: 'normal',
+      chat_type: 't2t',
+      timestamp: Date.now(),
+    }),
+  })
+
+  const text = await res.text()
+  if (!res.ok) {
+    const parsed = parseQwenError(text)
+    if (parsed) throw new QwenParallelError(parsed.message, parsed.code, parsed.status, parsed.retryHours)
+    const status = res.status >= 500 ? res.status : 502
+    throw new QwenParallelError(`Failed to create Qwen chat: ${res.status} ${text.slice(0, 200)}`, 'UpstreamError', status)
+  }
+
+  let json: any
+  try {
+    json = JSON.parse(text)
+  } catch {
+    throw new QwenParallelError(`Qwen chats/new returned non-JSON: ${text.slice(0, 200)}`, 'UpstreamError', 502)
+  }
+
+  const chatId = json?.data?.id || json?.data?.chat_id || json?.id
+  if (!chatId || typeof chatId !== 'string') {
+    // Surface the raw shape so the request contract can be corrected if Qwen changes it.
+    console.error('[QwenParallel] Unexpected chats/new response:', text.slice(0, 400))
+    throw new QwenParallelError(`Qwen chats/new returned no chat id: ${text.slice(0, 300)}`, 'UpstreamError', 502)
+  }
+  return chatId
+}
+
 export async function createParallelStream(
   finalPrompt: string,
   enableThinking: boolean,
@@ -61,6 +116,8 @@ export async function createParallelStream(
   const { headers } = await getQwenHeaders(false, accountId)
 
   const model = modelId.replace('-no-thinking', '')
+  // A fresh conversation per request — the key to parallel streams per account.
+  const chatId = await createNewChat(headers, model)
   const timestamp = Math.floor(Date.now() / 1000)
   const fid = uuidv4()
 
@@ -68,7 +125,7 @@ export async function createParallelStream(
     stream: true,
     version: '2.1',
     incremental_output: true,
-    chat_id: null,
+    chat_id: chatId,
     chat_mode: 'normal',
     model,
     parent_id: null,
@@ -104,7 +161,7 @@ export async function createParallelStream(
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
-  const response = await fetch(`${QWEN_BASE}/api/v2/chat/completions`, {
+  const response = await fetch(`${QWEN_BASE}/api/v2/chat/completions?chat_id=${chatId}`, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -112,7 +169,7 @@ export async function createParallelStream(
       'content-type': 'application/json',
       cookie: headers['cookie'],
       origin: QWEN_BASE,
-      referer: `${QWEN_BASE}/`,
+      referer: `${QWEN_BASE}/c/${chatId}`,
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
