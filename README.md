@@ -13,7 +13,9 @@ Proxy API local compatível com OpenAI que roteia requisições para os modelos 
 ## Features
 
 - **OpenAI API Compatible** — Interface compatível com `/v1/chat/completions` e `/v1/models`.
-- **Multi-Account** — Gerencie múltiplas contas Qwen com rotação round-robin e cooldown automático.
+- **Multi-Account** — Gerencie múltiplas contas Qwen com rotação round-robin e cooldown automático (persistido em SQLite, sobrevive a restart).
+- **Qwen Paralelo** — Entrypoint adicional em `/qwen-parallel` sem mutex por conta: cria um chat novo por request e permite **múltiplos streams simultâneos na mesma conta** (ideal para orquestração multi-agente).
+- **OpenRouter Proxy** — Entrypoint em `/openrouter` que rotaciona um pool de API keys do OpenRouter, com cooldown por key em 429/402/401. Sem navegador — API direta.
 - **SQLite Storage** — Contas salvas em banco de dados SQLite (WAL mode) para performance e confiabilidade.
 - **Reasoning Support** — Suporte completo ao modo de pensamento (thinking) dos modelos Qwen.
 - **Tool Execution** — Sistema de execução de ferramentas locais integrado ao fluxo do chat.
@@ -96,7 +98,13 @@ QWEN_PASSWORD=sua-senha-aqui
 
 # Navegador (chromium, firefox, chrome, edge)
 BROWSER=chromium
+
+# OpenRouter proxy (opcional) — pool de keys separadas por vírgula.
+# Habilita as rotas /openrouter. Deixe vazio para desabilitar.
+OPENROUTER_KEYS=sk-or-v1-xxxx,sk-or-v1-yyyy
 ```
+
+> A `API_KEY`, se definida, protege **todas** as rotas (Qwen, `/qwen-parallel` e `/openrouter`). Deixe vazia para um proxy aberto.
 
 ---
 
@@ -139,12 +147,32 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 
 | Rota | Método | Descrição |
 |------|--------|-----------|
-| `/v1/chat/completions` | POST | Chat completions (streaming + non-streaming) |
+| `/v1/chat/completions` | POST | Chat completions Qwen (streaming + non-streaming) |
 | `/v1/chat/completions/stop` | POST | Abortar uma geração ativa |
 | `/v1/models` | GET | Listar modelos disponíveis |
 | `/v1/models/:model` | GET | Informações de um modelo específico |
+| `/qwen-parallel/v1/chat/completions` | POST | Qwen sem mutex — streams paralelos por conta |
+| `/qwen-parallel/v1/models` | GET | Modelos Qwen (via serviço paralelo) |
+| `/qwen-parallel/v1/status` | GET | Status de cooldown por conta |
+| `/openrouter/v1/chat/completions` | POST | OpenRouter com rotação de keys |
+| `/openrouter/v1/models` | GET | Modelos do OpenRouter |
+| `/openrouter/v1/keys` | GET | Status/cooldown das keys (mascarado) |
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
+
+---
+
+## Entrypoints adicionais
+
+Além das rotas Qwen padrão (`/v1/...`), o servidor expõe dois proxies extras no **mesmo processo/porta**, cada um com seu prefixo. Aponte o `baseURL` do seu cliente OpenAI para o que precisar:
+
+| Entrypoint | `baseURL` | Quando usar | Detalhes |
+|------------|-----------|-------------|----------|
+| **Qwen (padrão)** | `http://localhost:3000/v1` | Cliente conversacional único | Serializa por conta (1 stream/conta) |
+| **Qwen paralelo** | `http://localhost:3000/qwen-parallel/v1` | Fan-out multi-agente | Muitos streams/conta, chat novo por request — veja [src/qwenparallel/README.md](src/qwenparallel/README.md) |
+| **OpenRouter** | `http://localhost:3000/openrouter/v1` | Modelos do OpenRouter com rotação de keys | Configure `OPENROUTER_KEYS` — veja [src/openrouterproxy/README.md](src/openrouterproxy/README.md) |
+
+Todos compartilham o mesmo pool de contas/cooldowns (no caso Qwen) e a mesma `API_KEY` opcional.
 
 ---
 
@@ -223,6 +251,15 @@ qwenproxy/
 │   │   └── models.ts            # Endpoints /v1/models
 │   ├── routes/
 │   │   └── chat.ts              # Handler /v1/chat/completions
+│   ├── qwenparallel/            # Entrypoint Qwen paralelo (/qwen-parallel)
+│   │   ├── router.ts            # Rotas + rotação sem mutex
+│   │   ├── stream.ts            # Cria chat novo por request + stream
+│   │   ├── prompt.ts            # Builder de prompt (isolado)
+│   │   └── delta.ts             # Helper de delta incremental
+│   ├── openrouterproxy/         # Proxy OpenRouter (/openrouter)
+│   │   ├── router.ts            # Rotas + rotação de keys
+│   │   ├── key-manager.ts       # Round-robin + cooldown por key
+│   │   └── keys.ts              # Carrega OPENROUTER_KEYS do .env
 │   ├── services/
 │   │   ├── playwright.ts        # Automação de navegador
 │   │   └── qwen.ts              # Integração com API do Qwen
