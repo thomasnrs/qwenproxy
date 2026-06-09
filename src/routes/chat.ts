@@ -75,7 +75,9 @@ export function getIncrementalDelta(oldStr: string, newStr: string): DeltaResult
   };
 }
 
-function parseQwenErrorPayload(raw: string): { message: string; status: number } | null {
+interface UpstreamErrorInfo { message: string; status: number; code: string; retryHours?: number }
+
+function parseQwenErrorPayload(raw: string): UpstreamErrorInfo | null {
   const text = raw.trim();
   if (!text || text.startsWith('data: ')) return null;
 
@@ -84,21 +86,34 @@ function parseQwenErrorPayload(raw: string): { message: string; status: number }
     if (payload && payload.success === false) {
       const code = payload.data?.code || payload.code || 'UpstreamError';
       const details = payload.data?.details || payload.message || 'Qwen returned an error';
-      const wait = payload.data?.num !== undefined ? ` Wait about ${payload.data.num} hour(s) before trying again.` : '';
+      const retryHours = typeof payload.data?.num === 'number' ? payload.data.num : undefined;
+      const wait = retryHours !== undefined ? ` Wait about ${retryHours} hour(s) before trying again.` : '';
       const status = code === 'RateLimited' ? 429 : (code === 'Not_Found' ? 404 : 502);
-      return { message: `Qwen upstream error: ${code}: ${details}.${wait}`, status };
+      return { message: `Qwen upstream error: ${code}: ${details}.${wait}`, status, code, retryHours };
     }
     if (payload && payload.error) {
       const msg = typeof payload.error === 'string' ? payload.error : (payload.error.message || JSON.stringify(payload.error));
-      return { message: `Qwen upstream error: ${msg}`, status: 502 };
+      return { message: `Qwen upstream error: ${msg}`, status: 502, code: 'UpstreamError' };
     }
   } catch {
     // Non-SSE, non-JSON upstream body. Keep this as an explicit bad gateway
     // instead of silently returning an empty assistant message.
-    return { message: `Qwen upstream returned non-SSE response: ${text.slice(0, 300)}`, status: 502 };
+    return { message: `Qwen upstream returned non-SSE response: ${text.slice(0, 300)}`, status: 502, code: 'UpstreamError' };
   }
 
   return null;
+}
+
+// The daily rate-limit comes back as an HTTP 200 with an error JSON in the
+// stream body (not a non-ok response), so it bypasses the createQwenStream
+// rate-limit handler. Apply the cooldown here when we detect it in-stream.
+function applyCooldownFromUpstream(accountId: string | undefined, err: UpstreamErrorInfo): void {
+  if (!accountId || accountId === 'global') return;
+  if (err.code === 'RateLimited' || err.status === 429) {
+    const cooldownMs = err.retryHours !== undefined ? err.retryHours * 60 * 60 * 1000 : undefined;
+    markAccountRateLimited(accountId, cooldownMs, 'RateLimited');
+    console.warn(`[Chat] Account ${accountId} rate-limited (detected in stream body). Cooldown set${err.retryHours !== undefined ? ` for ~${err.retryHours}h` : ''}.`);
+  }
 }
 
 export async function chatCompletions(c: Context) {
@@ -216,6 +231,7 @@ export async function chatCompletions(c: Context) {
     let stream: ReadableStream | undefined;
     let uiSessionId = '';
     let releaseChatLock: (() => void) | undefined;
+    let activeAccountId: string | undefined;
     const completionId = 'chatcmpl-' + uuidv4();
 
     while (account) {
@@ -256,6 +272,7 @@ export async function chatCompletions(c: Context) {
             );
             stream = result.stream;
             uiSessionId = result.uiSessionId;
+            activeAccountId = result.accountId;
             registerStream(completionId, {
               abortController: result.controller,
               accountId: result.accountId,
@@ -436,6 +453,7 @@ export async function chatCompletions(c: Context) {
 
       const upstreamError = parseQwenErrorPayload(buffer);
       if (upstreamError) {
+        applyCooldownFromUpstream(activeAccountId, upstreamError);
         removeStream(completionId);
         releaseChatLock?.();
         return c.json({ error: { message: upstreamError.message } }, upstreamError.status as any);
@@ -665,6 +683,7 @@ export async function chatCompletions(c: Context) {
 
       const upstreamError = parseQwenErrorPayload(buffer);
       if (upstreamError) {
+        applyCooldownFromUpstream(activeAccountId, upstreamError);
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',
