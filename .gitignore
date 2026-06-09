@@ -37,3 +37,7 @@ Thumbs.db
 # Legacy
 /core/
 
+# Reference-only: copy of another tool (Lumi) that consumes this proxy.
+# Not part of this project — kept locally for context only.
+referencia_ignorar/
+

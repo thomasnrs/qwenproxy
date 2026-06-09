@@ -7,6 +7,7 @@ import { Watchdog } from '../core/watchdog.js'
 import { app as modelsApp } from './models.js'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 import { openRouterApp } from '../openrouterproxy/router.js'
+import { qwenParallelApp } from '../qwenparallel/router.js'
 
 const app = new Hono()
 app.route('', modelsApp)
@@ -15,6 +16,10 @@ app.post('/v1/chat/completions/stop', chatCompletionsStop)
 // OpenRouter passthrough proxy with multi-key rotation (separate path prefix so
 // it never collides with the Qwen routes above).
 app.route('/openrouter', openRouterApp)
+// Mutex-free Qwen entrypoint: many concurrent streams per account (fresh chat
+// per request). Separate path prefix; shares the account pool but none of the
+// main route's code.
+app.route('/qwen-parallel', qwenParallelApp)
 
 let cache: MemoryCache
 let watchdog: Watchdog
