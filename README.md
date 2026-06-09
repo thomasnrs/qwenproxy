@@ -15,7 +15,7 @@ Proxy API local compatível com OpenAI que roteia requisições para os modelos 
 - **OpenAI API Compatible** — Interface compatível com `/v1/chat/completions` e `/v1/models`.
 - **Multi-Account** — Gerencie múltiplas contas Qwen com rotação round-robin e cooldown automático (persistido em SQLite, sobrevive a restart).
 - **Qwen Paralelo** — Entrypoint adicional em `/qwen-parallel` sem mutex por conta: cria um chat novo por request e permite **múltiplos streams simultâneos na mesma conta** (ideal para orquestração multi-agente).
-- **OpenRouter Proxy** — Entrypoint em `/openrouter` que rotaciona um pool de API keys do OpenRouter, com cooldown por key em 429/402/401. Sem navegador — API direta.
+- **OpenRouter Proxy** — Entrypoint em `/openrouter` com pool de API keys e **throttle de RPS por key** (proativo, enfileira pra não estourar o limite). Controle manual de RPS/disable por key via console. Sem navegador — API direta.
 - **SQLite Storage** — Contas salvas em banco de dados SQLite (WAL mode) para performance e confiabilidade.
 - **Reasoning Support** — Suporte completo ao modo de pensamento (thinking) dos modelos Qwen.
 - **Tool Execution** — Sistema de execução de ferramentas locais integrado ao fluxo do chat.
@@ -137,13 +137,20 @@ O menu interativo permite:
 Com o servidor em execução num terminal interativo, você pode desativar/reativar contas **ao vivo** (útil quando você percebe um rate-limit que a detecção automática não pegou). Basta digitar no console:
 
 ```
+# Contas Qwen
 list                          # lista contas + status (ativa / cooldown / desativada)
 disable <email|id|#> [horas]  # desativa (sem "horas" = indefinido até reativar)
 enable  <email|id|#>          # reativa a conta
+
+# Keys OpenRouter (prefixo "or")
+or list                       # keys: RPS, status e próximo slot
+or rps <key|#|all> <n>        # define requisições/segundo da key (ou de todas)
+or disable <key|#>            # para de usar a key
+or enable  <key|#>            # volta a usar a key
 help
 ```
 
-Mudanças no console valem na hora. Mudanças via `npm run login` (outro processo) são sincronizadas com o servidor a cada ~10s (ambos compartilham o SQLite).
+Mudanças no console valem na hora. Mudanças de conta Qwen via `npm run login` (outro processo) são sincronizadas com o servidor a cada ~10s (ambos compartilham o SQLite). As keys/RPS do OpenRouter ficam em memória (default do `.env`).
 
 ---
 
@@ -169,9 +176,9 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 | `/qwen-parallel/v1/chat/completions` | POST | Qwen sem mutex — streams paralelos por conta |
 | `/qwen-parallel/v1/models` | GET | Modelos Qwen (via serviço paralelo) |
 | `/qwen-parallel/v1/status` | GET | Status de cooldown por conta |
-| `/openrouter/v1/chat/completions` | POST | OpenRouter com rotação de keys |
+| `/openrouter/v1/chat/completions` | POST | OpenRouter com throttle de RPS por key |
 | `/openrouter/v1/models` | GET | Modelos do OpenRouter |
-| `/openrouter/v1/keys` | GET | Status/cooldown das keys (mascarado) |
+| `/openrouter/v1/keys` | GET | Status das keys (RPS, disabled, próximo slot) |
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
 
@@ -185,7 +192,7 @@ Além das rotas Qwen padrão (`/v1/...`), o servidor expõe dois proxies extras 
 |------------|-----------|-------------|----------|
 | **Qwen (padrão)** | `http://localhost:3000/v1` | Cliente conversacional único | Serializa por conta (1 stream/conta) |
 | **Qwen paralelo** | `http://localhost:3000/qwen-parallel/v1` | Fan-out multi-agente | Muitos streams/conta, chat novo por request — veja [src/qwenparallel/README.md](src/qwenparallel/README.md) |
-| **OpenRouter** | `http://localhost:3000/openrouter/v1` | Modelos do OpenRouter com rotação de keys | Configure `OPENROUTER_KEYS` — veja [src/openrouterproxy/README.md](src/openrouterproxy/README.md) |
+| **OpenRouter** | `http://localhost:3000/openrouter/v1` | Modelos do OpenRouter com throttle de RPS | Configure `OPENROUTER_KEYS` + `OPENROUTER_RPS` — veja [src/openrouterproxy/README.md](src/openrouterproxy/README.md) |
 
 Todos compartilham o mesmo pool de contas/cooldowns (no caso Qwen) e a mesma `API_KEY` opcional.
 

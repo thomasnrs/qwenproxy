@@ -1,28 +1,46 @@
 # OpenRouter proxy
 
-An OpenAI-compatible passthrough to [OpenRouter](https://openrouter.ai) with
-multi-key rotation and per-key cooldowns. It runs **inside the same server** as
-the Qwen proxy (no separate process/port), mounted under the `/openrouter`
+An OpenAI-compatible passthrough to [OpenRouter](https://openrouter.ai) with a
+**per-key requests-per-second (RPS) throttle**. It runs **inside the same server**
+as the Qwen proxy (no separate process/port), mounted under the `/openrouter`
 prefix so it never collides with the Qwen `/v1/...` routes.
 
 Unlike the Qwen side, this needs **no browser/Playwright** — OpenRouter is a
 direct API, so the request and (streamed) response bodies are forwarded as-is.
-The only added logic is picking a healthy key and rotating away from any key
-that gets rate-limited.
+
+## Rate limiting: full manual + proactive RPS
+
+OpenRouter's limits aren't a fixed per-key cooldown — they're per-model and, in
+practice, a requests-per-second ceiling. So this proxy does **no automatic
+cooldown**. Instead:
+
+- **Per-key RPS throttle (proactive).** Each key has a configurable RPS. Every
+  request reserves the soonest free slot across the enabled keys and *waits* for
+  it if needed, so the proxy stays under the rate and naturally spreads load
+  across keys (concurrent requests fan out to different keys).
+- **Failover, no benching.** If a key returns 401/402/403/408/429 or a 5xx, the
+  request fails over to the next key — but the key is **never auto-disabled**.
+  You manage keys manually (tune RPS or disable) via the admin console.
+- **Queue cap.** If every key is saturated for longer than `OPENROUTER_MAX_WAIT_MS`,
+  the request returns `429` instead of waiting indefinitely.
+
+All RPS/disable state is **in-memory** (the `.env` provides the boot default).
 
 ## Configuration
 
-All config is via environment variables (`.env`):
-
 ```bash
-# Required to enable the proxy — comma-separated pool of keys to rotate.
+# Required — comma-separated pool of keys.
 OPENROUTER_KEYS=sk-or-v1-aaaa,sk-or-v1-bbbb,sk-or-v1-cccc
 
-# Optional ranking headers shown on openrouter.ai
+# Requests per second per key (default 1; fractional ok, e.g. 0.5 = 1 req/2s).
+OPENROUTER_RPS=1
+
+# Max queue wait before returning 429 when all keys are saturated (ms, default 30000).
+OPENROUTER_MAX_WAIT_MS=30000
+
+# Optional ranking headers / upstream override
 OPENROUTER_REFERER=https://your-app.example
 OPENROUTER_TITLE=Your App Name
-
-# Optional upstream override (rarely needed)
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 ```
 
@@ -33,29 +51,24 @@ If `API_KEY` is set (shared with the Qwen proxy), requests must send
 
 Base URL for clients: `http://<host>:<port>/openrouter/v1`
 
-| Method | Path                            | Notes                                          |
-| ------ | ------------------------------- | ---------------------------------------------- |
-| `POST` | `/openrouter/v1/chat/completions` | Stream + non-stream. Rotates keys on failure.  |
-| `GET`  | `/openrouter/v1/models`           | Proxies the OpenRouter model list.             |
-| `GET`  | `/openrouter/v1/keys`             | Masked key + cooldown status (debugging).      |
+| Method | Path                              | Notes                                       |
+| ------ | --------------------------------- | ------------------------------------------- |
+| `POST` | `/openrouter/v1/chat/completions` | Stream + non-stream. RPS-throttled + failover. |
+| `GET`  | `/openrouter/v1/models`           | Proxies the OpenRouter model list.          |
+| `GET`  | `/openrouter/v1/keys`             | Key RPS / disabled / next-slot status.      |
 
-Point any OpenAI client at the base URL above and use any OpenRouter model id
-(e.g. `deepseek/deepseek-r1:free`).
+Use any OpenRouter model id (e.g. `deepseek/deepseek-r1:free`).
 
-## Rotation & cooldown behaviour
+## Live admin (server console)
 
-A key is put on cooldown (and the request retries the next key) when OpenRouter
-returns:
+With the server running in an interactive terminal:
 
-| Status | Reason        | Default cooldown                         |
-| ------ | ------------- | ---------------------------------------- |
-| `429`  | `RateLimited` | from `X-RateLimit-Reset` / `Retry-After`, else 1 min |
-| `402`  | `NoCredits`   | 1 hour                                   |
-| `401` / `403` | `InvalidKey` | 24 hours                          |
-| `5xx`  | upstream      | not cooled; just tries the next key      |
+```
+or list                  # keys: RPS, status, next free slot
+or rps <key|#|all> <n>   # set requests-per-second for a key (or all)
+or disable <key|#>       # stop using a key
+or enable  <key|#>       # resume using a key
+```
 
-A `4xx` that is the caller's fault (e.g. `400` bad model) is returned as-is
-without burning other keys. When every key is on cooldown the proxy replies
-`429` with a hint of when the soonest key frees up.
-
-Cooldowns are **in-memory only** (reset on restart) by design.
+Changes take effect immediately and are in-memory (reset to the `.env` defaults
+on restart).
