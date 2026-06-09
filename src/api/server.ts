@@ -24,6 +24,7 @@ app.route('/qwen-parallel', qwenParallelApp)
 let cache: MemoryCache
 let watchdog: Watchdog
 let server: any
+let cooldownSync: NodeJS.Timeout | null = null
 
 app.use('*', async (c, next) => {
   metrics.increment('requests.total')
@@ -108,6 +109,16 @@ export async function startServer(): Promise<void> {
 
   metrics.startCollection()
 
+  // Pick up cooldown changes made out-of-process (e.g. disabling an account via
+  // `npm run login`) without a restart. The DB is the source of truth.
+  const { reloadCooldownsFromDb } = await import('../core/account-manager.ts')
+  cooldownSync = setInterval(() => reloadCooldownsFromDb(), 10000)
+
+  // Interactive admin console (disable/enable accounts live). No-op when stdin
+  // is not a TTY.
+  const { startAdminConsole } = await import('../core/admin-console.ts')
+  startAdminConsole()
+
   server = serve({
     fetch: app.fetch,
     port: config.server.port,
@@ -120,6 +131,9 @@ export async function startServer(): Promise<void> {
     console.log(`Received ${signal}, shutting down gracefully...`)
     watchdog.stop()
     metrics.stopCollection()
+    if (cooldownSync) { clearInterval(cooldownSync); cooldownSync = null }
+    const { stopAdminConsole } = await import('../core/admin-console.ts')
+    stopAdminConsole()
     await cache.close()
     const { closePlaywright } = await import('../services/playwright.js')
     await closePlaywright()

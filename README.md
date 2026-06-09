@@ -126,9 +126,24 @@ O menu interativo permite:
 - **[A]** Adicionar conta com credenciais (email + senha)
 - **[M]** Adicionar conta via login manual no navegador
 - **[R]** Remover uma conta
+- **[D]** Desativar uma conta (cooldown manual — por X horas ou indefinido)
+- **[E]** Reativar uma conta (remove o cooldown/desativação)
 - **[L]** Login em todas as contas (inicializar sessões)
 
 > Na primeira execução, se existir um `accounts.json` antigo, as contas serão migradas automaticamente para SQLite.
+
+### Console interativo (servidor rodando)
+
+Com o servidor em execução num terminal interativo, você pode desativar/reativar contas **ao vivo** (útil quando você percebe um rate-limit que a detecção automática não pegou). Basta digitar no console:
+
+```
+list                          # lista contas + status (ativa / cooldown / desativada)
+disable <email|id|#> [horas]  # desativa (sem "horas" = indefinido até reativar)
+enable  <email|id|#>          # reativa a conta
+help
+```
+
+Mudanças no console valem na hora. Mudanças via `npm run login` (outro processo) são sincronizadas com o servidor a cada ~10s (ambos compartilham o SQLite).
 
 ---
 
@@ -265,7 +280,9 @@ qwenproxy/
 │   │   └── qwen.ts              # Integração com API do Qwen
 │   ├── core/
 │   │   ├── accounts.ts          # CRUD de contas (SQLite)
-│   │   ├── account-manager.ts   # Rotação round-robin + cooldowns
+│   │   ├── account-manager.ts   # Rotação round-robin + cooldowns (persistidos)
+│   │   ├── account-admin.ts     # Disable/enable manual de contas
+│   │   ├── admin-console.ts     # Console interativo (disable/enable ao vivo)
 │   │   ├── database.ts          # Conexão e migrations SQLite
 │   │   ├── config.ts            # Configuração com Zod
 │   │   ├── logger.ts            # Logger estruturado

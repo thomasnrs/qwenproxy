@@ -151,10 +151,9 @@ app.post('/v1/chat/completions', async (c) => {
   let chosenAccountId = ''
 
   while (account) {
-    if (tried.has(account.id)) {
-      account = getNextAvailableAccount(account.id)
-      continue
-    }
+    // getNextAvailableAccount falls back to a still-cooled account when none are
+    // free; once it hands back one we already tried, every account is exhausted.
+    if (tried.has(account.id)) break
     tried.add(account.id)
 
     if (getAccountCooldownInfo(account.id)) {

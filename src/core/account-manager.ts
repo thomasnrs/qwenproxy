@@ -40,6 +40,31 @@ function ensureCooldownsLoaded(): void {
   }
 }
 
+/**
+ * Rebuild the in-memory cooldown map from SQLite. The DB is the single source of
+ * truth (every mutation writes through), so a full reload stays consistent and
+ * lets out-of-process changes — e.g. disabling an account from the login CLI —
+ * propagate to a running server. Called periodically by the server.
+ */
+export function reloadCooldownsFromDb(): void {
+  try {
+    const db = getDatabase()
+    const rows = db.prepare('SELECT account_id, until, reason FROM account_cooldowns').all() as Array<{ account_id: string; until: number; reason: string }>
+    const now = Date.now()
+    cooldowns.clear()
+    for (const row of rows) {
+      if (row.until > now) {
+        cooldowns.set(row.account_id, { until: row.until, reason: row.reason })
+      } else {
+        db.prepare('DELETE FROM account_cooldowns WHERE account_id = ?').run(row.account_id)
+      }
+    }
+    cooldownsLoaded = true
+  } catch (err: any) {
+    console.error('[AccountManager] Failed to reload cooldowns:', err?.message)
+  }
+}
+
 function persistCooldown(accountId: string, until: number, reason: string): void {
   try {
     getDatabase().prepare(

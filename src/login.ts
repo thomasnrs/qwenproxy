@@ -1,5 +1,6 @@
 import { addAccount, removeAccount, listAccounts, getAccountCredentials, QwenAccount } from './core/accounts.ts'
 import { initPlaywrightForAccount, closePlaywrightForAccount, BrowserType, launchManualLoginAccount, extractAccountInfoFromContext } from './services/playwright.ts'
+import { listAccountStatus, disableAccount, enableAccount, formatRemaining } from './core/account-admin.ts'
 import * as readline from 'readline'
 import * as dotenv from 'dotenv'
 
@@ -37,9 +38,11 @@ async function showMenu() {
     console.log('=== QwenProxy Account Manager ===\n')
 
     if (accounts.length > 0) {
+      const statuses = listAccountStatus()
       console.log(`Configured accounts (${accounts.length}):\n`)
-      for (let i = 0; i < accounts.length; i++) {
-        console.log(`  [${i + 1}] ${accounts[i].email} (ID: ${accounts[i].id})`)
+      for (const s of statuses) {
+        const tag = s.disabled ? `  <- ${formatRemaining(s)}` : ''
+        console.log(`  [${s.index}] ${s.email} (ID: ${s.id})${tag}`)
       }
     } else {
       console.log('No accounts configured yet.\n')
@@ -50,6 +53,8 @@ async function showMenu() {
     console.log('  [M] Add account (manual browser login)')
     if (accounts.length > 0) {
       console.log('  [R] Remove an account')
+      console.log('  [D] Disable an account (cooldown)')
+      console.log('  [E] Enable (re-activate) an account')
       console.log('  [L] Login all accounts')
     }
     console.log('  [Q] Quit\n')
@@ -73,6 +78,16 @@ async function showMenu() {
 
     if (choice === 'R' && accounts.length > 0) {
       await removeAccountFlow()
+      continue
+    }
+
+    if (choice === 'D' && accounts.length > 0) {
+      await disableAccountFlow()
+      continue
+    }
+
+    if (choice === 'E' && accounts.length > 0) {
+      await enableAccountFlow()
       continue
     }
 
@@ -142,6 +157,68 @@ async function removeAccountFlow() {
     console.log('Cancelled.')
   }
 
+  await askQuestion('Press Enter to continue...')
+}
+
+async function disableAccountFlow() {
+  const statuses = listAccountStatus()
+  if (statuses.length === 0) return
+
+  clear()
+  console.log('=== Disable Account (cooldown) ===\n')
+  for (const s of statuses) {
+    const tag = s.disabled ? `  <- ${formatRemaining(s)}` : ''
+    console.log(`  [${s.index}] ${s.email}${tag}`)
+  }
+
+  const input = await askQuestion('\nSelect account number to disable (or 0 to cancel): ')
+  if (input === '0') { console.log('Cancelled.'); await askQuestion('Press Enter to continue...'); return }
+  const target = statuses.find(s => String(s.index) === input)
+  if (!target) {
+    console.log('Invalid selection.')
+    await askQuestion('Press Enter to continue...')
+    return
+  }
+
+  const hoursInput = await askQuestion('Disable for how many hours? (Enter = indefinite): ')
+  let hours: number | undefined
+  if (hoursInput) {
+    const n = Number(hoursInput)
+    if (!Number.isFinite(n) || n <= 0) {
+      console.log('Invalid number of hours.')
+      await askQuestion('Press Enter to continue...')
+      return
+    }
+    hours = n
+  }
+
+  const result = disableAccount(target.id, hours)
+  console.log(`\n${result.message}`)
+  await askQuestion('Press Enter to continue...')
+}
+
+async function enableAccountFlow() {
+  const statuses = listAccountStatus()
+  if (statuses.length === 0) return
+
+  clear()
+  console.log('=== Enable (re-activate) Account ===\n')
+  for (const s of statuses) {
+    const tag = s.disabled ? `  <- ${formatRemaining(s)}` : '  (ativa)'
+    console.log(`  [${s.index}] ${s.email}${tag}`)
+  }
+
+  const input = await askQuestion('\nSelect account number to enable (or 0 to cancel): ')
+  if (input === '0') { console.log('Cancelled.'); await askQuestion('Press Enter to continue...'); return }
+  const target = statuses.find(s => String(s.index) === input)
+  if (!target) {
+    console.log('Invalid selection.')
+    await askQuestion('Press Enter to continue...')
+    return
+  }
+
+  const result = enableAccount(target.id)
+  console.log(`\n${result.message}`)
   await askQuestion('Press Enter to continue...')
 }
 
