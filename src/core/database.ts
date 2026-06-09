@@ -41,6 +41,13 @@ function runMigrations(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
+
+    CREATE TABLE IF NOT EXISTS account_cooldowns (
+      account_id TEXT PRIMARY KEY,
+      until INTEGER NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'RateLimited',
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
   `)
 }
 

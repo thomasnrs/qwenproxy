@@ -75,7 +75,14 @@ export async function startServer(): Promise<void> {
   if (accounts.length > 0) {
     console.log(`[Server] Pre-warming ${accounts.length} configured account(s)...`)
     const { initPlaywrightForAccount } = await import('../services/playwright.ts')
+    const { getAccountCooldownInfo } = await import('../core/account-manager.ts')
     for (const account of accounts) {
+      const cooldown = getAccountCooldownInfo(account.id)
+      if (cooldown) {
+        const mins = Math.round(cooldown.remainingMs / 60000)
+        console.log(`[Server] Skipping pre-warm for ${account.email} — on cooldown for ~${mins}min (${cooldown.reason}). Will init lazily when cooldown expires.`)
+        continue
+      }
       try {
         await initPlaywrightForAccount(account, config.browser.headless)
       } catch (err: any) {
