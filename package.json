@@ -11,6 +11,8 @@
     "login": "npx tsx src/login.ts",
     "deepseek:login": "npx tsx src/deepseek/login.ts",
     "deepseek:login:chrome": "npx tsx src/deepseek/login.ts --browser=chrome",
+    "chatgpt:login": "npx tsx src/chatgpt/login.ts",
+    "chatgpt:login:chrome": "npx tsx src/chatgpt/login.ts --browser=chrome",
     "login:firefox": "npx tsx src/login.ts --browser=firefox",
     "login:chrome": "npx tsx src/login.ts --browser=chrome",
     "login:edge": "npx tsx src/login.ts --browser=edge",

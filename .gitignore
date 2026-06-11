@@ -20,6 +20,7 @@ accounts.json.bak
 # Browser profiles (session data)
 qwen_profiles/
 deepseek_profiles/
+chatgpt_profiles/
 
 # Logs
 *.log

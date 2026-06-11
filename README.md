@@ -182,6 +182,9 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 | `/deepseek/v1/chat/completions` | POST | DeepSeek via Playwright (chat.deepseek.com) |
 | `/deepseek/v1/models` | GET | Modelos DeepSeek (chat/reasoner) |
 | `/deepseek/v1/accounts` | GET | Contas DeepSeek + estado |
+| `/chatgpt/v1/chat/completions` | POST | ChatGPT via Playwright (chatgpt.com) |
+| `/chatgpt/v1/models` | GET | Modelos ChatGPT |
+| `/chatgpt/v1/accounts` | GET | Contas ChatGPT + estado |
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
 
@@ -197,6 +200,7 @@ Além das rotas Qwen padrão (`/v1/...`), o servidor expõe dois proxies extras 
 | **Qwen paralelo** | `http://localhost:3000/qwen-parallel/v1` | Fan-out multi-agente | Muitos streams/conta, chat novo por request — veja [src/qwenparallel/README.md](src/qwenparallel/README.md) |
 | **OpenRouter** | `http://localhost:3000/openrouter/v1` | Modelos do OpenRouter com throttle de RPS | Configure `OPENROUTER_KEYS` + `OPENROUTER_RPS` — veja [src/openrouterproxy/README.md](src/openrouterproxy/README.md) |
 | **DeepSeek** | `http://localhost:3000/deepseek/v1` | chat.deepseek.com via Playwright (free) | `npm run deepseek:login` p/ adicionar contas — veja [src/deepseek/README.md](src/deepseek/README.md) |
+| **ChatGPT** | `http://localhost:3000/chatgpt/v1` | chatgpt.com via Playwright (free) | `npm run chatgpt:login` p/ adicionar contas — veja [src/chatgpt/README.md](src/chatgpt/README.md) |
 
 Todos compartilham o mesmo pool de contas/cooldowns (no caso Qwen) e a mesma `API_KEY` opcional.
 

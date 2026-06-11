@@ -9,6 +9,7 @@ import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 import { openRouterApp } from '../openrouterproxy/router.js'
 import { qwenParallelApp } from '../qwenparallel/router.js'
 import { deepSeekApp } from '../deepseek/router.js'
+import { chatGPTApp } from '../chatgpt/router.js'
 
 const app = new Hono()
 app.route('', modelsApp)
@@ -23,6 +24,8 @@ app.route('/openrouter', openRouterApp)
 app.route('/qwen-parallel', qwenParallelApp)
 // DeepSeek via Playwright (chat.deepseek.com), separate account pool.
 app.route('/deepseek', deepSeekApp)
+// ChatGPT via Playwright (chatgpt.com), separate account pool.
+app.route('/chatgpt', chatGPTApp)
 
 let cache: MemoryCache
 let watchdog: Watchdog
@@ -122,6 +125,21 @@ export async function startServer(): Promise<void> {
     }
   }
 
+  // Pre-warm ChatGPT accounts (separate pool / browser profiles).
+  const { loadChatGPTAccounts } = await import('../chatgpt/accounts.ts')
+  const chatGPTAccounts = loadChatGPTAccounts()
+  if (chatGPTAccounts.length > 0) {
+    console.log(`[Server] Pre-warming ${chatGPTAccounts.length} ChatGPT account(s)...`)
+    const { initChatGPTAccount } = await import('../chatgpt/browser.ts')
+    for (const account of chatGPTAccounts) {
+      try {
+        await initChatGPTAccount(account, config.browser.headless)
+      } catch (err: any) {
+        console.error(`[Server] Failed to initialize ChatGPT account ${account.email}:`, err.message)
+      }
+    }
+  }
+
   watchdog = new Watchdog()
   watchdog.start()
 
@@ -157,6 +175,8 @@ export async function startServer(): Promise<void> {
     await closePlaywright()
     const { closeAllDeepSeek } = await import('../deepseek/browser.ts')
     await closeAllDeepSeek()
+    const { closeAllChatGPT } = await import('../chatgpt/browser.ts')
+    await closeAllChatGPT()
     const { closeDatabase } = await import('../core/database.ts')
     closeDatabase()
     server?.close()
