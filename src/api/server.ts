@@ -8,6 +8,7 @@ import { app as modelsApp } from './models.js'
 import { chatCompletions, chatCompletionsStop } from '../routes/chat.js'
 import { openRouterApp } from '../openrouterproxy/router.js'
 import { qwenParallelApp } from '../qwenparallel/router.js'
+import { deepSeekApp } from '../deepseek/router.js'
 
 const app = new Hono()
 app.route('', modelsApp)
@@ -20,6 +21,8 @@ app.route('/openrouter', openRouterApp)
 // per request). Separate path prefix; shares the account pool but none of the
 // main route's code.
 app.route('/qwen-parallel', qwenParallelApp)
+// DeepSeek via Playwright (chat.deepseek.com), separate account pool.
+app.route('/deepseek', deepSeekApp)
 
 let cache: MemoryCache
 let watchdog: Watchdog
@@ -104,6 +107,21 @@ export async function startServer(): Promise<void> {
     await initPlaywright(config.browser.headless)
   }
 
+  // Pre-warm DeepSeek accounts (separate pool / browser profiles).
+  const { loadDeepSeekAccounts } = await import('../deepseek/accounts.ts')
+  const deepSeekAccounts = loadDeepSeekAccounts()
+  if (deepSeekAccounts.length > 0) {
+    console.log(`[Server] Pre-warming ${deepSeekAccounts.length} DeepSeek account(s)...`)
+    const { initDeepSeekAccount } = await import('../deepseek/browser.ts')
+    for (const account of deepSeekAccounts) {
+      try {
+        await initDeepSeekAccount(account, config.browser.headless)
+      } catch (err: any) {
+        console.error(`[Server] Failed to initialize DeepSeek account ${account.email}:`, err.message)
+      }
+    }
+  }
+
   watchdog = new Watchdog()
   watchdog.start()
 
@@ -137,6 +155,8 @@ export async function startServer(): Promise<void> {
     await cache.close()
     const { closePlaywright } = await import('../services/playwright.js')
     await closePlaywright()
+    const { closeAllDeepSeek } = await import('../deepseek/browser.ts')
+    await closeAllDeepSeek()
     const { closeDatabase } = await import('../core/database.ts')
     closeDatabase()
     server?.close()

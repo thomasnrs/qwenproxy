@@ -179,6 +179,9 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 | `/openrouter/v1/chat/completions` | POST | OpenRouter com throttle de RPS por key |
 | `/openrouter/v1/models` | GET | Modelos do OpenRouter |
 | `/openrouter/v1/keys` | GET | Status das keys (RPS, disabled, próximo slot) |
+| `/deepseek/v1/chat/completions` | POST | DeepSeek via Playwright (chat.deepseek.com) |
+| `/deepseek/v1/models` | GET | Modelos DeepSeek (chat/reasoner) |
+| `/deepseek/v1/accounts` | GET | Contas DeepSeek + estado |
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
 
@@ -193,6 +196,7 @@ Além das rotas Qwen padrão (`/v1/...`), o servidor expõe dois proxies extras 
 | **Qwen (padrão)** | `http://localhost:3000/v1` | Cliente conversacional único | Serializa por conta (1 stream/conta) |
 | **Qwen paralelo** | `http://localhost:3000/qwen-parallel/v1` | Fan-out multi-agente | Muitos streams/conta, chat novo por request — veja [src/qwenparallel/README.md](src/qwenparallel/README.md) |
 | **OpenRouter** | `http://localhost:3000/openrouter/v1` | Modelos do OpenRouter com throttle de RPS | Configure `OPENROUTER_KEYS` + `OPENROUTER_RPS` — veja [src/openrouterproxy/README.md](src/openrouterproxy/README.md) |
+| **DeepSeek** | `http://localhost:3000/deepseek/v1` | chat.deepseek.com via Playwright (free) | `npm run deepseek:login` p/ adicionar contas — veja [src/deepseek/README.md](src/deepseek/README.md) |
 
 Todos compartilham o mesmo pool de contas/cooldowns (no caso Qwen) e a mesma `API_KEY` opcional.
 

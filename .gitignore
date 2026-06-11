@@ -19,6 +19,7 @@ accounts.json.bak
 
 # Browser profiles (session data)
 qwen_profiles/
+deepseek_profiles/
 
 # Logs
 *.log

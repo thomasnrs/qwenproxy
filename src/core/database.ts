@@ -48,6 +48,13 @@ function runMigrations(db: Database.Database): void {
       reason TEXT NOT NULL DEFAULT 'RateLimited',
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS deepseek_accounts (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `)
 }
 
