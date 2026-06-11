@@ -42,3 +42,6 @@ Thumbs.db
 # Not part of this project — kept locally for context only.
 referencia_ignorar/
 
+
+# Stray backup zip (kept locally, not tracked)
+src.zip
