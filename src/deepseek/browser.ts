@@ -64,6 +64,9 @@ function buildHookScript(accountId: string, debug: boolean): string {
     window.__dsAccountId = ${JSON.stringify(accountId)};
     window.__dsDebug = ${debug ? 'true' : 'false'};
     const send = (d) => { try { window.__dsChunk(window.__dsAccountId, d); } catch (e) {} };
+    const isCompletion = (url) => typeof url === 'string' && url.indexOf('/chat/completion') !== -1;
+
+    // fetch path (kept for safety; DeepSeek currently uses XHR for completion).
     if (!window.__dsHooked && typeof window.fetch === 'function') {
       window.__dsHooked = true;
       const orig = window.fetch.bind(window);
@@ -73,7 +76,7 @@ function buildHookScript(accountId: string, debug: boolean): string {
         if (window.__dsDebug && url) send('__DSCTRL__URL ' + url);
         const res = await orig(...args);
         try {
-          if (url.indexOf('/chat/completion') !== -1 && res && res.body) {
+          if (isCompletion(url) && res && res.body) {
             const clone = res.clone();
             (async () => {
               try {
@@ -91,12 +94,42 @@ function buildHookScript(accountId: string, debug: boolean): string {
         return res;
       };
     }
-    if (window.__dsDebug && !window.__dsXhrHooked && window.XMLHttpRequest) {
+
+    // XHR path — this is how DeepSeek streams /chat/completion. We read
+    // responseText progressively (it accumulates during readyState 3) and tee
+    // the delta on each event.
+    if (!window.__dsXhrHooked && window.XMLHttpRequest) {
       window.__dsXhrHooked = true;
       const xo = XMLHttpRequest.prototype.open;
+      const xs = XMLHttpRequest.prototype.send;
       XMLHttpRequest.prototype.open = function (method, url) {
-        send('__DSCTRL__URL [xhr] ' + url);
+        try { this.__dsUrl = url; } catch (e) {}
+        if (window.__dsDebug && url) send('__DSCTRL__URL [xhr] ' + url);
         return xo.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function () {
+        try {
+          const url = this.__dsUrl || '';
+          if (isCompletion(url)) {
+            let lastLen = 0;
+            let done = false;
+            const pump = () => {
+              try {
+                if (this.responseType && this.responseType !== 'text') return;
+                const txt = this.responseText || '';
+                if (txt.length > lastLen) { send(txt.slice(lastLen)); lastLen = txt.length; }
+              } catch (e) {}
+            };
+            const finish = () => { if (done) return; done = true; pump(); send('__DSCTRL__DONE'); };
+            this.addEventListener('readystatechange', () => { if (this.readyState >= 3) pump(); });
+            this.addEventListener('progress', pump);
+            this.addEventListener('load', finish);
+            this.addEventListener('loadend', finish);
+            this.addEventListener('error', () => { if (!done) { done = true; send('__DSCTRL__ERR xhr error'); } });
+            this.addEventListener('abort', finish);
+          }
+        } catch (e) {}
+        return xs.apply(this, arguments);
       };
     }
   })();`
