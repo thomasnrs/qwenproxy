@@ -52,6 +52,56 @@ export function getMutex(accountId: string): Mutex {
   return m
 }
 
+/**
+ * Builds the page-side hook, injected via addInitScript so it runs BEFORE the
+ * site's own scripts (which may cache window.fetch) and re-installs on every
+ * navigation. It tees any /chat/completion stream to Node via __dsChunk, keyed
+ * by the account id (stable across navigations — unlike a per-request id).
+ * Control messages use a "__DSCTRL__" prefix that real SSE data never starts with.
+ */
+function buildHookScript(accountId: string, debug: boolean): string {
+  return `(() => {
+    window.__dsAccountId = ${JSON.stringify(accountId)};
+    window.__dsDebug = ${debug ? 'true' : 'false'};
+    const send = (d) => { try { window.__dsChunk(window.__dsAccountId, d); } catch (e) {} };
+    if (!window.__dsHooked && typeof window.fetch === 'function') {
+      window.__dsHooked = true;
+      const orig = window.fetch.bind(window);
+      window.fetch = async function (...args) {
+        let url = '';
+        try { url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || ''; } catch (e) {}
+        if (window.__dsDebug && url) send('__DSCTRL__URL ' + url);
+        const res = await orig(...args);
+        try {
+          if (url.indexOf('/chat/completion') !== -1 && res && res.body) {
+            const clone = res.clone();
+            (async () => {
+              try {
+                const reader = clone.body.getReader();
+                const dec = new TextDecoder();
+                for (;;) {
+                  const r = await reader.read();
+                  if (r.done) { send('__DSCTRL__DONE'); break; }
+                  send(dec.decode(r.value, { stream: true }));
+                }
+              } catch (e) { send('__DSCTRL__ERR' + ((e && e.message) || e)); }
+            })();
+          }
+        } catch (e) {}
+        return res;
+      };
+    }
+    if (window.__dsDebug && !window.__dsXhrHooked && window.XMLHttpRequest) {
+      window.__dsXhrHooked = true;
+      const xo = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        send('__DSCTRL__URL [xhr] ' + url);
+        return xo.apply(this, arguments);
+      };
+    }
+  })();`
+}
+
 function resolveEngine(browserType: BrowserType): { engine: any; channel?: string } {
   switch (browserType) {
     case 'firefox': return { engine: firefox }
@@ -87,8 +137,13 @@ export async function initDeepSeekAccount(account: DeepSeekAccount, headless = t
   const profilePath = path.resolve('deepseek_profiles', account.id)
   console.log(`[DeepSeek] Launching ${browserType} for account ${account.email}...`)
   const ctx = await launchContext(profilePath, headless, browserType)
+
+  // Expose the bridge and install the hook BEFORE any navigation, so the site's
+  // scripts can never run before our fetch override is in place.
+  await ctx.exposeFunction('__dsChunk', (accountId: string, data: string) => pushChunk(accountId, data))
+  await ctx.addInitScript(buildHookScript(account.id, process.env.DEEPSEEK_DEBUG === '1'))
+
   const page = ctx.pages()[0] || (await ctx.newPage())
-  await page.exposeFunction('__dsChunk', (reqId: string, data: string) => pushChunk(reqId, data))
   contexts.set(account.id, ctx)
   pages.set(account.id, page)
   await page.goto(`${DS_URL}/`, { waitUntil: 'domcontentloaded' }).catch(() => {})
