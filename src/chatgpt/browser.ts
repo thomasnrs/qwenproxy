@@ -54,81 +54,35 @@ export function getMutex(accountId: string): Mutex {
 }
 
 /**
- * Page-side hook (via addInitScript: runs before the site's scripts and on every
- * navigation). Tees the streamed completion to Node via __cgChunk. ChatGPT
- * streams /backend-api/conversation; we capture it from both fetch and XHR.
- * Control messages use a "__CGCTRL__" prefix real SSE data never starts with.
+ * Page-side hook (via addInitScript). ChatGPT streams the answer over a separate
+ * conduit/WebSocket channel — NOT in the completion response body — so the actual
+ * content is captured by scraping the rendered DOM (see complete.ts), not from
+ * the network. This hook only logs requested URLs when CHATGPT_DEBUG is on, which
+ * is handy for diagnosis. Control messages use a "__CGCTRL__" prefix.
  */
 function buildHookScript(accountId: string, debug: boolean): string {
+  if (!debug) return `(() => { window.__cgAccountId = ${JSON.stringify(accountId)}; })();`
   return `(() => {
     window.__cgAccountId = ${JSON.stringify(accountId)};
-    window.__cgDebug = ${debug ? 'true' : 'false'};
     const send = (d) => { try { window.__cgChunk(window.__cgAccountId, d); } catch (e) {} };
-    const isCompletion = (url, method) => {
-      if (typeof url !== 'string') return false;
-      if (url.indexOf('/conversation') === -1) return false;
-      if (url.indexOf('gen_title') !== -1 || url.indexOf('/init') !== -1) return false;
-      return (method || 'GET').toUpperCase() === 'POST';
-    };
-
     if (!window.__cgHooked && typeof window.fetch === 'function') {
       window.__cgHooked = true;
       const orig = window.fetch.bind(window);
-      window.fetch = async function (...args) {
-        let url = '', method = 'GET';
-        try { url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || ''; method = (args[1] && args[1].method) || (args[0] && args[0].method) || 'GET'; } catch (e) {}
-        if (window.__cgDebug && url) send('__CGCTRL__URL ' + method + ' ' + url);
-        const res = await orig(...args);
+      window.fetch = function (...args) {
         try {
-          if (isCompletion(url, method) && res && res.body) {
-            const clone = res.clone();
-            (async () => {
-              try {
-                const reader = clone.body.getReader();
-                const dec = new TextDecoder();
-                for (;;) {
-                  const r = await reader.read();
-                  if (r.done) { send('__CGCTRL__DONE'); break; }
-                  send(dec.decode(r.value, { stream: true }));
-                }
-              } catch (e) { send('__CGCTRL__ERR' + ((e && e.message) || e)); }
-            })();
-          }
+          const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+          const m = (args[1] && args[1].method) || (args[0] && args[0].method) || 'GET';
+          if (url) send('__CGCTRL__URL ' + m + ' ' + url);
         } catch (e) {}
-        return res;
+        return orig(...args);
       };
     }
-
     if (!window.__cgXhrHooked && window.XMLHttpRequest) {
       window.__cgXhrHooked = true;
       const xo = XMLHttpRequest.prototype.open;
-      const xs = XMLHttpRequest.prototype.send;
       XMLHttpRequest.prototype.open = function (method, url) {
-        try { this.__cgUrl = url; this.__cgMethod = method; } catch (e) {}
-        if (window.__cgDebug && url) send('__CGCTRL__URL [xhr] ' + method + ' ' + url);
+        try { if (url) send('__CGCTRL__URL [xhr] ' + method + ' ' + url); } catch (e) {}
         return xo.apply(this, arguments);
-      };
-      XMLHttpRequest.prototype.send = function () {
-        try {
-          if (isCompletion(this.__cgUrl || '', this.__cgMethod)) {
-            let lastLen = 0, done = false;
-            const pump = () => {
-              try {
-                if (this.responseType && this.responseType !== 'text') return;
-                const txt = this.responseText || '';
-                if (txt.length > lastLen) { send(txt.slice(lastLen)); lastLen = txt.length; }
-              } catch (e) {}
-            };
-            const finish = () => { if (done) return; done = true; pump(); send('__CGCTRL__DONE'); };
-            this.addEventListener('readystatechange', () => { if (this.readyState >= 3) pump(); });
-            this.addEventListener('progress', pump);
-            this.addEventListener('load', finish);
-            this.addEventListener('loadend', finish);
-            this.addEventListener('error', () => { if (!done) { done = true; send('__CGCTRL__ERR xhr error'); } });
-            this.addEventListener('abort', finish);
-          }
-        } catch (e) {}
-        return xs.apply(this, arguments);
       };
     }
   })();`

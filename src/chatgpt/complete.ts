@@ -1,14 +1,13 @@
 /*
- * ChatGPT proxy — completion via UI driving + stream tee.
+ * ChatGPT proxy — completion via UI driving + DOM scraping.
  *
- * Per request (serialized per account): open a fresh chat, type the prompt, send.
- * The page handles Cloudflare/Arkose/Sentinel/PoW and fires
- * /backend-api/conversation; the hook (browser.ts) tees the SSE back here keyed
- * by account id, which we parse into typed events.
+ * ChatGPT streams the answer over a conduit/WebSocket channel (the completion
+ * POST only returns a token), so intercepting the network body doesn't work.
+ * Instead we type + send through the real page and read the rendered assistant
+ * message from the DOM as it grows, emitting text deltas. This is transport-
+ * agnostic — it sidesteps the conduit, the Sentinel PoW, and Cloudflare.
  *
- * The SSE PARSER is best-effort — ChatGPT's stream format varies (cumulative
- * `parts` vs `{o,p,v}` patch ops). Set CHATGPT_DEBUG=1 to log raw chunks + URLs
- * and lock the parser to the real format.
+ * Selectors are best-effort; CHATGPT_DEBUG=1 logs the requested URLs.
  */
 
 import { getPage, getMutex, isLoggedIn, CG_URL } from './browser.ts'
@@ -16,7 +15,7 @@ import { registerSink, unregisterSink } from './tee.ts'
 
 const DEBUG = process.env.CHATGPT_DEBUG === '1'
 const RESPONSE_TIMEOUT_MS = 180000
-const STALL_TIMEOUT_MS = 60000
+const STALL_TIMEOUT_MS = 90000
 
 export type CGEvent =
   | { type: 'content'; text: string }
@@ -44,68 +43,49 @@ async function submitPrompt(page: any, prompt: string): Promise<void> {
   }
 
   await page.waitForTimeout(300)
-  // Prefer the send button (multiline-safe); fall back to Enter.
   const btn = await page.$('[data-testid="send-button"], button[aria-label*="Send" i]')
   if (btn) await btn.click().catch(() => {})
   else await page.keyboard.press('Enter')
 }
 
-interface ParseState { lastContent: string; lastReasoning: string; lastPath: string }
+// Installed in the page after sending. Polls the last assistant message and tees
+// text deltas (cumulative innerText -> delta) to Node, finishing when generation
+// stops (no stop-button) and the text has been stable for a moment.
+function domObserver(accountId: string): void {
+  const w = window as any
+  try { if (w.__cgObserverStop) w.__cgObserverStop() } catch {}
+  const send = (d: string) => { try { w.__cgChunk(accountId, d) } catch {} }
 
-function emitCumulative(full: string, isThought: boolean, state: ParseState, out: CGEvent[]): void {
-  const prev = isThought ? state.lastReasoning : state.lastContent
-  let delta = ''
-  if (full.length >= prev.length && full.startsWith(prev)) delta = full.slice(prev.length)
-  else if (full !== prev) delta = full // non-prefix change — emit whole
-  if (delta) out.push({ type: isThought ? 'reasoning' : 'content', text: delta })
-  if (isThought) state.lastReasoning = full
-  else state.lastContent = full
-}
+  let lastText = ''
+  let stable = 0
+  let started = false
 
-// Best-effort parse of one ChatGPT SSE payload.
-function parsePayload(jsonStr: string, state: ParseState): CGEvent[] {
-  const out: CGEvent[] = []
-  let obj: any
-  try {
-    obj = JSON.parse(jsonStr)
-  } catch {
-    return out
+  const contentEl = (): HTMLElement | null => {
+    const msgs = document.querySelectorAll('[data-message-author-role="assistant"]')
+    const m = msgs[msgs.length - 1] as HTMLElement | undefined
+    if (!m) return null
+    return (m.querySelector('.markdown') as HTMLElement) || m
   }
+  const isGenerating = (): boolean =>
+    !!document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i]')
 
-  // Shape A: full message object { message: { author, content: { content_type, parts } } }
-  const msg = obj?.message || obj?.v?.message
-  if (msg?.content?.parts && Array.isArray(msg.content.parts)) {
-    const parts = msg.content.parts.filter((p: any) => typeof p === 'string')
-    if (parts.length) {
-      const isThought = msg.content.content_type === 'thoughts' || msg.author?.role === 'tool'
-      emitCumulative(parts.join(''), isThought, state, out)
-      return out
+  const tick = () => {
+    const el = contentEl()
+    const txt = el ? el.innerText || '' : ''
+    if (txt && txt !== lastText) {
+      if (txt.length > lastText.length && txt.startsWith(lastText)) send(txt.slice(lastText.length))
+      else if (txt.length > lastText.length) send(txt.slice(lastText.length))
+      lastText = txt
     }
+    if (isGenerating()) { started = true; stable = 0 }
+    else if (started || lastText) { stable++ }
+    if (stable >= 8) { stop(); send('__CGCTRL__DONE') }
   }
 
-  // Shape B: patch ops { o: 'append'|'patch'|'add', p: '/message/content/parts/0', v: '...' }
-  if (obj && obj.v !== undefined) {
-    const p: string = typeof obj.p === 'string' ? obj.p : state.lastPath
-    if (typeof obj.p === 'string') state.lastPath = obj.p
-    const v = obj.v
-    if (typeof v === 'string') {
-      const isThought = p.indexOf('thought') !== -1
-      if (p.indexOf('parts') !== -1 || p === '' || p.indexOf('content') !== -1) {
-        out.push({ type: isThought ? 'reasoning' : 'content', text: v })
-      }
-    } else if (Array.isArray(v)) {
-      // batch of patch ops
-      for (const op of v) {
-        if (op && typeof op.v === 'string') {
-          const pp = typeof op.p === 'string' ? op.p : state.lastPath
-          const isThought = pp.indexOf('thought') !== -1
-          if (pp.indexOf('parts') !== -1 || pp.indexOf('content') !== -1) out.push({ type: isThought ? 'reasoning' : 'content', text: op.v })
-        }
-      }
-    }
-  }
-
-  return out
+  const id = setInterval(tick, 200)
+  const safety = setTimeout(() => { stop(); send('__CGCTRL__DONE') }, 175000)
+  function stop() { clearInterval(id); clearTimeout(safety); w.__cgObserverStop = null }
+  w.__cgObserverStop = stop
 }
 
 export async function* streamChatGPT(accountId: string, prompt: string): AsyncGenerator<CGEvent> {
@@ -154,46 +134,36 @@ export async function* streamChatGPT(accountId: string, prompt: string): AsyncGe
 
     try {
       await submitPrompt(page, prompt)
+      await page.evaluate(domObserver, accountId)
     } catch (e: any) {
-      yield { type: 'error', message: `Failed to submit prompt to ChatGPT UI: ${e?.message}` }
+      yield { type: 'error', message: `Failed to drive ChatGPT UI: ${e?.message}` }
       return
     }
 
     hardTimer = setTimeout(() => push(null), RESPONSE_TIMEOUT_MS)
     armStall()
 
-    const state: ParseState = { lastContent: '', lastReasoning: '', lastPath: '' }
-    let buffer = ''
     let sawAny = false
     while (true) {
       const raw = await nextRaw()
       if (raw === null) break
       armStall()
       if (raw.startsWith('__CGCTRL__ERR')) {
-        yield { type: 'error', message: `ChatGPT stream error: ${raw.slice('__CGCTRL__ERR'.length)}` }
+        yield { type: 'error', message: `ChatGPT error: ${raw.slice('__CGCTRL__ERR'.length)}` }
         break
       }
+      if (DEBUG) console.log('[ChatGPT][delta]', JSON.stringify(raw))
       sawAny = true
-      if (DEBUG) console.log('[ChatGPT][raw]', JSON.stringify(raw))
-
-      buffer += raw
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data:')) continue
-        const payload = trimmed.slice(5).trim()
-        if (!payload || payload === '[DONE]') continue
-        for (const ev of parsePayload(payload, state)) yield ev
-      }
+      yield { type: 'content', text: raw }
     }
 
     if (!sawAny) {
-      yield { type: 'error', message: 'No stream captured from ChatGPT. The page may have been blocked (Cloudflare) or did not send. Run with CHATGPT_DEBUG=1 to see the requested URLs.' }
+      yield { type: 'error', message: 'No response scraped from ChatGPT. Selectors may be off (assistant message / stop button), or the send did not fire. Run with CHATGPT_DEBUG=1.' }
     }
   } finally {
     if (stallTimer) clearTimeout(stallTimer)
     if (hardTimer) clearTimeout(hardTimer)
+    try { await page.evaluate(() => { const w = window as any; if (w.__cgObserverStop) w.__cgObserverStop() }) } catch {}
     unregisterSink(accountId)
     release()
   }
