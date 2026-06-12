@@ -48,44 +48,43 @@ async function submitPrompt(page: any, prompt: string): Promise<void> {
   else await page.keyboard.press('Enter')
 }
 
-// Installed in the page after sending. Polls the last assistant message and tees
-// text deltas (cumulative innerText -> delta) to Node, finishing when generation
-// stops (no stop-button) and the text has been stable for a moment.
-function domObserver(accountId: string): void {
-  const w = window as any
-  try { if (w.__cgObserverStop) w.__cgObserverStop() } catch {}
-  const send = (d: string) => { try { w.__cgChunk(accountId, d) } catch {} }
-
-  let lastText = ''
-  let stable = 0
-  let started = false
-
-  const contentEl = (): HTMLElement | null => {
-    const msgs = document.querySelectorAll('[data-message-author-role="assistant"]')
-    const m = msgs[msgs.length - 1] as HTMLElement | undefined
-    if (!m) return null
-    return (m.querySelector('.markdown') as HTMLElement) || m
-  }
-  const isGenerating = (): boolean =>
-    !!document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i]')
-
-  const tick = () => {
-    const el = contentEl()
-    const txt = el ? el.innerText || '' : ''
-    if (txt && txt !== lastText) {
-      if (txt.length > lastText.length && txt.startsWith(lastText)) send(txt.slice(lastText.length))
-      else if (txt.length > lastText.length) send(txt.slice(lastText.length))
-      lastText = txt
-    }
-    if (isGenerating()) { started = true; stable = 0 }
-    else if (started || lastText) { stable++ }
-    if (stable >= 8) { stop(); send('__CGCTRL__DONE') }
-  }
-
-  const id = setInterval(tick, 200)
-  const safety = setTimeout(() => { stop(); send('__CGCTRL__DONE') }, 175000)
-  function stop() { clearInterval(id); clearTimeout(safety); w.__cgObserverStop = null }
-  w.__cgObserverStop = stop
+// Built as a STRING (not a function reference): tsx/esbuild rewrites named
+// functions with a __name() helper that doesn't exist in the page, so a passed
+// function throws "__name is not defined". A string is injected verbatim.
+//
+// Installed after sending: polls the last assistant message and tees text deltas
+// (cumulative innerText -> delta), finishing when generation stops (no
+// stop-button) and the text has been stable for a moment.
+function buildObserverScript(accountId: string): string {
+  return `(() => {
+    const w = window;
+    try { if (w.__cgObserverStop) w.__cgObserverStop(); } catch (e) {}
+    const send = (d) => { try { w.__cgChunk(${JSON.stringify(accountId)}, d); } catch (e) {} };
+    let lastText = '', stable = 0, started = false;
+    const contentEl = () => {
+      const msgs = document.querySelectorAll('[data-message-author-role="assistant"]');
+      const m = msgs[msgs.length - 1];
+      if (!m) return null;
+      return m.querySelector('.markdown') || m;
+    };
+    const isGenerating = () => !!document.querySelector('[data-testid="stop-button"], button[aria-label*="Stop" i]');
+    let id = null, safety = null;
+    const stop = () => { if (id) clearInterval(id); if (safety) clearTimeout(safety); w.__cgObserverStop = null; };
+    const tick = () => {
+      const el = contentEl();
+      const txt = el ? (el.innerText || '') : '';
+      if (txt && txt !== lastText) {
+        if (txt.length > lastText.length) send(txt.slice(lastText.length));
+        lastText = txt;
+      }
+      if (isGenerating()) { started = true; stable = 0; }
+      else if (started || lastText) { stable++; }
+      if (stable >= 8) { stop(); send('__CGCTRL__DONE'); }
+    };
+    id = setInterval(tick, 200);
+    safety = setTimeout(() => { stop(); send('__CGCTRL__DONE'); }, 175000);
+    w.__cgObserverStop = stop;
+  })();`
 }
 
 export async function* streamChatGPT(accountId: string, prompt: string): AsyncGenerator<CGEvent> {
@@ -134,7 +133,7 @@ export async function* streamChatGPT(accountId: string, prompt: string): AsyncGe
 
     try {
       await submitPrompt(page, prompt)
-      await page.evaluate(domObserver, accountId)
+      await page.evaluate(buildObserverScript(accountId))
     } catch (e: any) {
       yield { type: 'error', message: `Failed to drive ChatGPT UI: ${e?.message}` }
       return
@@ -163,7 +162,7 @@ export async function* streamChatGPT(accountId: string, prompt: string): AsyncGe
   } finally {
     if (stallTimer) clearTimeout(stallTimer)
     if (hardTimer) clearTimeout(hardTimer)
-    try { await page.evaluate(() => { const w = window as any; if (w.__cgObserverStop) w.__cgObserverStop() }) } catch {}
+    try { await page.evaluate('(() => { try { if (window.__cgObserverStop) window.__cgObserverStop(); } catch (e) {} })()') } catch {}
     unregisterSink(accountId)
     release()
   }
