@@ -187,16 +187,54 @@ app.post('/v1/chat/completions', async (c) => {
   })
 })
 
-app.get('/v1/models', (c) => {
+app.get('/v1/models', async (c) => {
   const created = Math.floor(Date.now() / 1000)
-  return c.json({
+  const fallback = {
     object: 'list',
     data: [
       { id: 'gpt-4o', object: 'model', created, owned_by: 'openai' },
       { id: 'gpt-4o-mini', object: 'model', created, owned_by: 'openai' },
       { id: 'o3-mini', object: 'model', created, owned_by: 'openai' },
     ],
-  })
+  }
+
+  try {
+    const accounts = loadChatGPTAccounts()
+    if (accounts.length === 0) return c.json(fallback)
+
+    // Use a logged-in page to fetch the account's REAL model list.
+    let acc = accounts.find(a => getPage(a.id)) || accounts[0]
+    if (!getPage(acc.id)) await initChatGPTAccount(acc, config.browser.headless)
+    const page = getPage(acc.id)
+    if (!page) return c.json(fallback)
+
+    const raw = await page.evaluate(async () => {
+      try {
+        const r = await fetch('/backend-api/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true', { credentials: 'include' })
+        if (!r.ok) return null
+        const j = await r.json()
+        return (j && j.models) || null
+      } catch {
+        return null
+      }
+    })
+
+    if (!Array.isArray(raw) || raw.length === 0) return c.json(fallback)
+
+    const seen = new Set<string>()
+    const data: any[] = []
+    for (const m of raw as any[]) {
+      const id = m?.slug || m?.id
+      if (!id || seen.has(id)) continue
+      seen.add(id)
+      data.push({ id, name: m?.title || id, object: 'model', created, owned_by: 'openai' })
+    }
+    console.log(`[ChatGPT] /v1/models -> ${data.length} models from ${acc.email}`)
+    return c.json({ object: 'list', data: data.length ? data : fallback.data })
+  } catch (e: any) {
+    console.warn('[ChatGPT] /v1/models failed, using fallback:', e?.message)
+    return c.json(fallback)
+  }
 })
 
 app.get('/v1/accounts', (c) => {
