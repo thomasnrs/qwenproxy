@@ -21,6 +21,7 @@ accounts.json.bak
 qwen_profiles/
 deepseek_profiles/
 chatgpt_profiles/
+claude_profiles/
 
 # Logs
 *.log

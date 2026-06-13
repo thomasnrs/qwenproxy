@@ -185,6 +185,9 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 | `/chatgpt/v1/chat/completions` | POST | ChatGPT via Playwright (chatgpt.com) |
 | `/chatgpt/v1/models` | GET | Modelos ChatGPT |
 | `/chatgpt/v1/accounts` | GET | Contas ChatGPT + estado |
+| `/claude/v1/chat/completions` | POST | Claude via Playwright (claude.ai) |
+| `/claude/v1/models` | GET | Modelos Claude web |
+| `/claude/v1/accounts` | GET | Contas Claude + estado |
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
 
@@ -201,6 +204,7 @@ Além das rotas Qwen padrão (`/v1/...`), o servidor expõe dois proxies extras 
 | **OpenRouter** | `http://localhost:3000/openrouter/v1` | Modelos do OpenRouter com throttle de RPS | Configure `OPENROUTER_KEYS` + `OPENROUTER_RPS` — veja [src/openrouterproxy/README.md](src/openrouterproxy/README.md) |
 | **DeepSeek** | `http://localhost:3000/deepseek/v1` | chat.deepseek.com via Playwright (free) | `npm run deepseek:login` p/ adicionar contas — veja [src/deepseek/README.md](src/deepseek/README.md) |
 | **ChatGPT** | `http://localhost:3000/chatgpt/v1` | chatgpt.com via Playwright (free) | `npm run chatgpt:login` p/ adicionar contas — veja [src/chatgpt/README.md](src/chatgpt/README.md) |
+| **Claude** | `http://localhost:3000/claude/v1` | claude.ai via Playwright | `npm run claude:login` p/ adicionar contas — veja [src/claude/README.md](src/claude/README.md) |
 
 Todos compartilham o mesmo pool de contas/cooldowns (no caso Qwen) e a mesma `API_KEY` opcional.
 

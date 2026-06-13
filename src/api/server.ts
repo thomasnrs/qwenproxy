@@ -10,6 +10,7 @@ import { openRouterApp } from '../openrouterproxy/router.js'
 import { qwenParallelApp } from '../qwenparallel/router.js'
 import { deepSeekApp } from '../deepseek/router.js'
 import { chatGPTApp } from '../chatgpt/router.js'
+import { claudeApp } from '../claude/router.js'
 
 const app = new Hono()
 app.route('', modelsApp)
@@ -26,6 +27,8 @@ app.route('/qwen-parallel', qwenParallelApp)
 app.route('/deepseek', deepSeekApp)
 // ChatGPT via Playwright (chatgpt.com), separate account pool.
 app.route('/chatgpt', chatGPTApp)
+// Claude via Playwright (claude.ai), separate account pool.
+app.route('/claude', claudeApp)
 
 let cache: MemoryCache
 let watchdog: Watchdog
@@ -140,6 +143,21 @@ export async function startServer(): Promise<void> {
     }
   }
 
+  // Pre-warm Claude accounts (separate pool / browser profiles).
+  const { loadClaudeAccounts } = await import('../claude/accounts.ts')
+  const claudeAccounts = loadClaudeAccounts()
+  if (claudeAccounts.length > 0) {
+    console.log(`[Server] Pre-warming ${claudeAccounts.length} Claude account(s)...`)
+    const { initClaudeAccount } = await import('../claude/browser.ts')
+    for (const account of claudeAccounts) {
+      try {
+        await initClaudeAccount(account, config.browser.headless)
+      } catch (err: any) {
+        console.error(`[Server] Failed to initialize Claude account ${account.email}:`, err.message)
+      }
+    }
+  }
+
   watchdog = new Watchdog()
   watchdog.start()
 
@@ -177,6 +195,8 @@ export async function startServer(): Promise<void> {
     await closeAllDeepSeek()
     const { closeAllChatGPT } = await import('../chatgpt/browser.ts')
     await closeAllChatGPT()
+    const { closeAllClaude } = await import('../claude/browser.ts')
+    await closeAllClaude()
     const { closeDatabase } = await import('../core/database.ts')
     closeDatabase()
     server?.close()
